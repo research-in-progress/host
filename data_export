@@ -1,0 +1,207 @@
+library(readr)
+library(lubridate)
+library(dplyr)
+library(tidyr)
+library(psych)
+library(GGally)
+
+##### export single file from Labvanced for trials & sessions together####################
+
+setwd("C:/Users/.../.../...") # select folder
+df_full <- read_csv("trials_and_sessions.csv")
+df_full <- df_full %>%  rename(ID = Exp_Subject_Id)
+View(df_full)
+
+
+##########################################################################################
+# check non-completed sessions 
+##########################################################################################
+ids_incomplete <- df_full %>%
+  filter(Completed == FALSE) %>%
+  pull(ID) %>%
+  unique()
+df_full <- df_full %>%  filter(!ID %in% ids_incomplete)
+
+
+##########################################################################################
+# Time for study in minutes
+##########################################################################################
+df_full$Start_Time <- ymd_hms(df_full$Start_Time)
+df_full$End_Time <- ymd_hms(df_full$End_Time)
+df_full$Time_Difference <- as.numeric(difftime(df_full$End_Time, df_full$Start_Time, units = "mins"))
+
+
+##########################################################################################
+# extract all variables (u need) with singular values (no trials) per participant into a new df
+##########################################################################################
+str(df_full)
+df_initial <- df_full %>%
+  group_by(ID) %>%
+  summarise(
+    across(c(Group_Name, Group_Nr, comments, help_ext, help_ext_3,     # Standard: Nimm den ersten nicht-NA-Wert
+             age, education, gender, studies, studies_subject, 
+             studies_subject_4, studies_universities, studies_universities_5, 
+             concentration, disturbance, Time_Difference, language, language_4, skills, ADHS_3,missing_time_limit,
+             Completed, participate_already, participate_interruption, interruption, seriousness, 
+             Always_Fullscreen, crit_detail, crit_inference), 
+           ~ first(na.omit(.)), .names = "{col}"),
+    score_crit = max(anzahl_crit, na.rm = TRUE)  )    # Für anzahl.crit: Nimm den maximalen Wert (ignoriere NAs)
+
+
+##########################################################################################
+# exclusion criteria part 1 
+##########################################################################################
+#exclusion criteria you want to enforce using >, < etc must be numeric
+df_wide$Time_Difference <- as.numeric(df_wide$Time_Difference)
+df_wide$age <- as.numeric(df_wide$age)
+str(df_wide)
+View(df_wide)
+
+# 1/5 first batch =================================================================== ####
+#### add manipulationcheck or/and attention check if you have any
+#### cases to exclude ( cases may be included multiple times!) 
+frequency_table <- df_wide %>%
+  summarise(
+    under_18 = sum(age < 18),
+    not_serious = sum(seriousness == "nicht_ernsthaft"),
+    participate_already = sum(participate_already == "schonmal"),
+    help_ext = sum(help_ext == "ja"),
+    skills = sum(skills == "wenig"),
+    time = sum(Time_Difference > 90)) # adjust max time if necessary
+frequency_table
+
+#### exclude 
+df_wide <- df_wide %>%
+  filter(!(age < 18 | 
+             seriousness == "nicht_ernsthaft" | 
+             participate_already == "schonmal" | 
+             help_ext == "ja" | 
+             skills == "wenig" | 
+             Time_Difference > 90))
+
+#### control (all should be 0) 
+frequency_table <- df_wide %>%
+  summarise(
+    under_18 = sum(age < 18),
+    not_serious = sum(seriousness == "nicht_ernsthaft"),
+    participate_already = sum(participate_already == "schonmal"),
+    help_ext = sum(help_ext == "ja"),
+    skills = sum(skills == "wenig"),
+    time = sum(Time_Difference > 90))
+frequency_table
+
+# 2/5 check comments for lack of motivation or concentration========================= ####
+df_wide[, c("ID", "comments")] # check comments
+df_wide <- df_wide %>%   filter(!ID %in% c("ID1", "ID2"))  # Replace "ID1", "ID2" with ID to delete
+df_wide[, c("ID", "comments")] # control
+
+
+# 3/5 check complete ================================================================ ####
+#### check if any participants did not complete = True, but still finished all important parts of the study
+df_wide[df_wide$Completed == FALSE, c("ID", "Completed", "seriousness", "participate_already")] # check that seriousness & participate_already have values
+df_wide <- df_wide %>%   filter(!ID %in% c("ID1", "ID2"))  # Replace "ID1", "ID2" with ID to delete (seriousness & participate_already empty)
+df_wide[df_wide$Completed == FALSE, c("ID", "Completed", "seriousness", "participate_already")] # control
+
+
+##########################################################################################
+# create main df, format variables, create scales & add scoring results
+##########################################################################################
+
+
+# main df =========================================================================== ####
+df <- df_wide[, c("ID", "Group_Name",
+                  "var3", "var4", "", "", "", "", "", "",
+                  "", "", "", "", "", "", "", "",
+                  "", "", "", "", "", "", "", "",
+                  "", "", "", "", "", "", "", "", 
+                  "",  "gender" , "education", "studies", "studies_subject", 
+                  "studies_universities", "age")]
+
+numeric_columns <- c( "", "", "", "", "", "", "",
+                      "", "", "", "", "", "", "",
+                      "", "", "", "", "", "", "",
+                      "", "", "", "", "",  "age")
+
+factor_columns <- c("gender", "education", "studies", "studies_subject",  "studies_universities")
+
+df <- df %>%  mutate(across(all_of(numeric_columns), as.numeric))
+df <- df %>%  mutate(across(all_of(factor_columns), as.factor))
+
+df$Group_Name
+df$condition.fac <- factor(df$Group_Name, levels = c("group1", "group2"))
+str(df)
+
+
+##########################################################################################
+# exclusion criteria part 2 (choose all continuous research & control variables)
+##########################################################################################
+
+## check correct data input (plausible min, max, mean, n)
+describe(df[, c("var1", "var2", "var3", "var4", "var5", "var6")])
+
+# 4/5 univariate ==================================================================== ####
+df_z <- as.data.frame(scale(df[, c("var1", "var2", "var3", "var4", "var5", "var6")]))
+colnames(df_z) <- paste0(colnames(df_z), ".z")
+
+par(mfrow=c(3, 3))  # 3 x 3 histograms
+for(i in 1:ncol(df_z)) {
+  hist(df_z[[i]], main=colnames(df_z)[i], xlab="", ylab="", col="lightblue", border="black")}
+par(mfrow=c(1,1)) 
+
+df_z$ID <- df$ID
+df <- merge(df, df_z, by = "ID")
+df$extreme <- apply(df[, paste0(c("var1", "var2", "var3", "var4", "var5", "var6"), ".z")], 1, function(row) {
+  ifelse(any(abs(row) > 3.29), 1, 0)})
+str(df)
+
+table(df$extreme) #check how many cases have a 1 (= outlier)
+df <- df %>% filter(extreme != 1) # delete these cases
+table(df$extreme) #check that no cases have 1 anymore
+
+
+
+# 5/5 multivariate ================================================================== ####
+select.mahala<- df[, c("var1", "var2", "var3", "var4", "var5", "var6")]
+df$mahala <- mahalanobis(select.mahala,colMeans(select.mahala, na.rm = TRUE),
+                         cov(select.mahala, use="pairwise.complete.obs"))
+
+critical.value <- qchisq(p=0.999, df=6) # df = number of continuous variables
+df$MAH <-0
+df$MAH[df$mahala > critical.value] <- 1
+table(df$MAH) # check how many cases have a 1
+df <- df %>% filter(MAH != 1) #delete these cases
+table(df$MAH) #check that no cases have 1 anymore
+
+
+##########################################################################################
+# Analysis
+##########################################################################################
+
+# demographics ====================================================================== ####
+attach(df)
+
+describe(age)
+
+table(gender)
+prop.table(table(gender))*100
+
+table(education)
+prop.table(table(education))*100
+
+table(studies)
+prop.table(table(studies))*100
+
+table(studies_subject)
+prop.table(table(studies_subject))*100
+
+
+# preliminary analysis ============================================================== ####
+ggpairs(df[, c("var1", "var2", "var3", "var4", "var5", "var6")]) # get an overview
+
+#  randomization checks
+chisq.test(table(df$gender, df$condition.fac))
+t.test(age ~ condition.fac, data = df) #if more than 2 groups: aov(age ~ condition.fac, data = df)
+t.test(var2 ~ condition.fac, data = df) #if more than 2 groups: aov(var2 ~ condition.fac, data = df)
+t.test(var3 ~ condition.fac, data = df) #if more than 2 groups: aov(var3 ~ condition.fac, data = df)
+
+  
